@@ -225,15 +225,15 @@ export default function Bids() {
         <table className="table">
           <thead>
             <tr>
-              <th className="px-4 py-3 text-left text-base font-bold uppercase tracking-wider text-slate-600">PROJECT NAME</th>
-              <th className="px-4 py-3 text-left text-base font-bold uppercase tracking-wider text-slate-600">CLIENT</th>
-              <th className="px-4 py-3 text-left text-base font-bold uppercase tracking-wider text-slate-600">AMOUNT</th>
-              <th className="px-4 py-3 text-left text-base font-bold uppercase tracking-wider text-slate-600">PROPOSAL DATE</th>
-              <th className="px-4 py-3 text-left text-base font-bold uppercase tracking-wider text-slate-600">DUE DATE</th>
-              <th className="px-4 py-3 text-left text-base font-bold uppercase tracking-wider text-slate-600">DUE IN</th>
-              <th className="px-4 py-3 text-left text-base font-bold uppercase tracking-wider text-slate-600">FOLLOW-UP IN</th>
-              <th className="px-4 py-3 text-left text-base font-bold uppercase tracking-wider text-slate-600">SCOPE STATUS</th>
-              <th className="px-4 py-3 text-left text-base font-bold uppercase tracking-wider text-slate-600">ACTIONS</th>
+              <th className="px-4 py-3 text-left text-sm font-bold uppercase tracking-wider text-slate-600">PROJECT NAME</th>
+              <th className="px-4 py-3 text-left text-sm font-bold uppercase tracking-wider text-slate-600">CLIENT</th>
+              <th className="px-4 py-3 text-left text-sm font-bold uppercase tracking-wider text-slate-600">AMOUNT</th>
+              <th className="px-4 py-3 text-left text-sm font-bold uppercase tracking-wider text-slate-600">PROPOSAL DATE</th>
+              <th className="px-4 py-3 text-left text-sm font-bold uppercase tracking-wider text-slate-600">DUE DATE</th>
+              <th className="px-4 py-3 text-left text-sm font-bold uppercase tracking-wider text-slate-600">DUE IN</th>
+              <th className="px-4 py-3 text-left text-sm font-bold uppercase tracking-wider text-slate-600">FOLLOW-UP IN</th>
+              <th className="px-4 py-3 text-left text-sm font-bold uppercase tracking-wider text-slate-600">SCOPE STATUS</th>
+              <th className="px-4 py-3 text-left text-sm font-bold uppercase tracking-wider text-slate-600">ACTIONS</th>
             </tr>
           </thead>
           <tbody>
