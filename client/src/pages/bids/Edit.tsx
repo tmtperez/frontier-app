@@ -1,6 +1,6 @@
 import React from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
-import { getJSON, putJSON } from '../../lib/api' // ⬅️ added putJSON
+import { getJSON, putJSON } from '../../lib/api'
 
 type Company = { id: number; name: string }
 type Contact = {
@@ -10,6 +10,7 @@ type Contact = {
   phone?: string | null
 }
 type Scope = { name: string; cost: number; status: 'Pending' | 'Won' | 'Lost' }
+type BidStatus = 'Active' | 'Complete' | 'Archived' | 'Hot' | 'Cold'
 type Bid = {
   id: number
   projectName: string
@@ -20,27 +21,23 @@ type Bid = {
   followUpOn?: string | null
   jobLocation?: string | null
   leadSource?: string | null
-  bidStatus: 'Active' | 'Complete' | 'Archived' | 'Hot' | 'Cold'
+  bidStatus: BidStatus
   scopes: Scope[]
 }
 
+/* ----------------------- helpers ----------------------- */
 const currency = (n: number) =>
   n.toLocaleString(undefined, { style: 'currency', currency: 'USD' })
 
-const dateFmt = (d?: string | null) =>
-  d ? new Date(d).toISOString().slice(0, 10) : '—'
+const dateToInput = (d?: string | null) =>
+  d ? new Date(d).toISOString().slice(0, 10) : ''
+
+const inputToISO = (v: string) => (v ? new Date(v + 'T00:00:00').toISOString() : null)
 
 function statusBadge(s: 'Pending' | 'Won' | 'Lost') {
-  const base =
-    'inline-flex items-center rounded-full px-3 py-1 text-sm font-semibold'
-  if (s === 'Won')
-    return (
-      <span className={`${base} bg-emerald-100 text-emerald-700`}>Won</span>
-    )
-  if (s === 'Lost')
-    return (
-      <span className={`${base} bg-rose-100 text-rose-700`}>Lost</span>
-    )
+  const base = 'inline-flex items-center rounded-full px-3 py-1 text-sm font-semibold'
+  if (s === 'Won') return <span className={`${base} bg-emerald-100 text-emerald-700`}>Won</span>
+  if (s === 'Lost') return <span className={`${base} bg-rose-100 text-rose-700`}>Lost</span>
   return <span className={`${base} bg-amber-100 text-amber-700`}>Pending</span>
 }
 
@@ -50,48 +47,20 @@ function pillBadge(text: string, tone: 'blue' | 'slate' = 'slate') {
     slate: 'bg-slate-100 text-slate-700',
   }
   return (
-    <span
-      className={`inline-flex items-center rounded-full px-3 py-1 text-sm font-semibold ${map[tone]}`}
-    >
+    <span className={`inline-flex items-center rounded-full px-3 py-1 text-sm font-semibold ${map[tone]}`}>
       {text}
     </span>
   )
 }
 
-/* ----------------------- ADDED: scope catalog + combobox ------------------- */
+/* ---------------- scope catalog + combobox (unchanged) --------------- */
 const SCOPE_LS_KEY = 'scopeCatalog.v1'
 const DEFAULT_SCOPES = [
-  'Architectural Aluminum',
-  'Canopies',
-  'Awnings',
-  'Pergola',
-  'Trellis',
-  'Arbor',
-  'Shutters',
-  'Cabana',
-  'String Light Poles',
-  'Pool LSE',
-  'Balcony Rail',
-  'Screen',
-  'Perimeter Fence',
-  'Retaining Wall Rail',
-  'ADA Rail',
-  'Pool Fence',
-  'Dog Park Fence',
-  'Wood Fence',
-  'Welded Wire Fence',
-  'Cable Rail',
-  'Pedestrian Gates',
-  'Breezeway Gates',
-  'Entry Gates',
-  'Compactor Gates',
-  'Compactor Rail',
-  'Pool Gates',
-  'Dog Park Gates',
-  'Glass Fence',
-  'Glass Gates',
-  'Chain Link Fence',
-  'PVC Fence',
+  'Architectural Aluminum','Canopies','Awnings','Pergola','Trellis','Arbor','Shutters','Cabana',
+  'String Light Poles','Pool LSE','Balcony Rail','Screen','Perimeter Fence','Retaining Wall Rail',
+  'ADA Rail','Pool Fence','Dog Park Fence','Wood Fence','Welded Wire Fence','Cable Rail','Pedestrian Gates',
+  'Breezeway Gates','Entry Gates','Compactor Gates','Compactor Rail','Pool Gates','Dog Park Gates',
+  'Glass Fence','Glass Gates','Chain Link Fence','PVC Fence',
 ] as const
 
 function loadScopeCatalog(): string[] {
@@ -104,7 +73,6 @@ function loadScopeCatalog(): string[] {
     return [...DEFAULT_SCOPES].sort((a, b) => a.localeCompare(b))
   }
 }
-
 function saveScopeCatalog(catalog: string[]) {
   const extras = catalog.filter(s => !DEFAULT_SCOPES.includes(s as any))
   localStorage.setItem(SCOPE_LS_KEY, JSON.stringify(extras))
@@ -157,45 +125,27 @@ function ScopeNameCombo(props: {
         placeholder="Scope Name"
         value={query}
         onFocus={() => setOpen(true)}
-        onChange={e => {
-          setQuery(e.target.value)
-          setOpen(true)
-        }}
+        onChange={e => { setQuery(e.target.value); setOpen(true) }}
         onKeyDown={(e) => {
-          if (e.key === 'ArrowDown') {
-            e.preventDefault()
-            setOpen(true)
-            setActiveIdx(i => Math.min(i + 1, options.length - 1))
-          } else if (e.key === 'ArrowUp') {
-            e.preventDefault()
-            setActiveIdx(i => Math.max(i - 1, -1))
-          } else if (e.key === 'Enter') {
+          if (e.key === 'ArrowDown') { e.preventDefault(); setOpen(true); setActiveIdx(i => Math.min(i + 1, options.length - 1)) }
+          else if (e.key === 'ArrowUp') { e.preventDefault(); setActiveIdx(i => Math.max(i - 1, -1)) }
+          else if (e.key === 'Enter') {
             e.preventDefault()
             if (open) {
-              if (activeIdx >= 0 && activeIdx < options.length) {
-                choose(options[activeIdx])
-              } else {
-                const val = query.trim()
-                if (!val) return
-                onChange(val)
-                if (!exists && onCommitNew) onCommitNew(val)
-                setOpen(false)
+              if (activeIdx >= 0 && activeIdx < options.length) choose(options[activeIdx])
+              else {
+                const val = query.trim(); if (!val) return
+                onChange(val); if (!exists && onCommitNew) onCommitNew(val); setOpen(false)
               }
             } else {
-              const val = query.trim()
-              if (!val) return
-              onChange(val)
-              if (!exists && onCommitNew) onCommitNew(val)
+              const val = query.trim(); if (!val) return
+              onChange(val); if (!exists && onCommitNew) onCommitNew(val)
             }
-          } else if (e.key === 'Escape') {
-            setOpen(false)
-          }
+          } else if (e.key === 'Escape') { setOpen(false) }
         }}
         onBlur={() => {
-          const val = query.trim()
-          if (!val) return
-          onChange(val)
-          if (!exists && onCommitNew) onCommitNew(val)
+          const val = query.trim(); if (!val) return
+          onChange(val); if (!exists && onCommitNew) onCommitNew(val)
         }}
       />
       {open && (
@@ -206,10 +156,7 @@ function ScopeNameCombo(props: {
                 key={opt}
                 className={`cursor-pointer px-3 py-2 text-sm hover:bg-slate-50 ${idx === activeIdx ? 'bg-slate-50' : ''}`}
                 onMouseEnter={() => setActiveIdx(idx)}
-                onMouseDown={(e) => {
-                  e.preventDefault()
-                  choose(opt)
-                }}
+                onMouseDown={(e) => { e.preventDefault(); choose(opt) }}
               >
                 {opt}
               </div>
@@ -223,9 +170,7 @@ function ScopeNameCombo(props: {
               onMouseDown={(e) => {
                 e.preventDefault()
                 const val = query.trim()
-                onChange(val)
-                onCommitNew?.(val)
-                setOpen(false)
+                onChange(val); onCommitNew?.(val); setOpen(false)
               }}
             >
               + Add “{query.trim()}”
@@ -236,25 +181,66 @@ function ScopeNameCombo(props: {
     </div>
   )
 }
-/* --------------------- END: scope catalog + combobox additions -------------- */
 
-export default function BidDetails() {
+/* --------------------- MAIN --------------------- */
+export default function BidEdit() {
   const { id } = useParams()
   const navigate = useNavigate()
+
   const [bid, setBid] = React.useState<Bid | null>(null)
 
-  // ADDED: editor state for scopes + catalog
+  // editable form state (besides scopes)
+  const [edit, setEdit] = React.useState<{
+    projectName: string
+    clientCompanyId: number | null
+    contactId: number | null
+    proposalDate: string
+    dueDate: string
+    followUpOn: string
+    jobLocation: string
+    leadSource: string
+    bidStatus: BidStatus
+  } | null>(null)
+
+  // scopes + catalog
   const [scopeCatalog, setScopeCatalog] = React.useState<string[]>(() => loadScopeCatalog())
   const [editScopes, setEditScopes] = React.useState<Scope[]>([])
+
+  // picklists (optional; will silently fallback if endpoints differ)
+  const [companies, setCompanies] = React.useState<Company[]>([])
+  const [contacts, setContacts] = React.useState<Contact[]>([])
+
   const [saving, setSaving] = React.useState(false)
-  const [saveError, setSaveError] = React.useState<string | null>(null)
+  const [error, setError] = React.useState<string | null>(null)
 
   React.useEffect(() => {
-    getJSON<Bid>(`/bids/${id}`).then(b => {
+    getJSON<Bid>(`/bids/${id}`).then((b) => {
       setBid(b)
+      setEdit({
+        projectName: b.projectName,
+        clientCompanyId: b.clientCompany?.id ?? null,
+        contactId: b.contact?.id ?? null,
+        proposalDate: dateToInput(b.proposalDate),
+        dueDate: dateToInput(b.dueDate),
+        followUpOn: dateToInput(b.followUpOn),
+        jobLocation: b.jobLocation ?? '',
+        leadSource: b.leadSource ?? '',
+        bidStatus: b.bidStatus,
+      })
       setEditScopes(b.scopes?.map(s => ({ ...s })) ?? [])
     })
   }, [id])
+
+  // load companies (best-effort)
+  React.useEffect(() => {
+    getJSON<Company[]>('/companies').then(setCompanies).catch(() => {})
+  }, [])
+
+  // load contacts when company changes (best-effort)
+  React.useEffect(() => {
+    if (!edit?.clientCompanyId) { setContacts([]); return }
+    getJSON<Contact[]>(`/contacts?companyId=${edit.clientCompanyId}`).then(setContacts).catch(() => {})
+  }, [edit?.clientCompanyId])
 
   function addToCatalogIfMissing(name: string) {
     const val = (name || '').trim()
@@ -274,30 +260,28 @@ export default function BidDetails() {
       )
     )
   }
-
   function addScopeRow() {
     setEditScopes(scopes => [...scopes, { name: '', cost: 0, status: 'Pending' }])
   }
-
   function removeScopeRow(i: number) {
     setEditScopes(scopes => scopes.filter((_, idx) => idx !== i))
   }
 
-  async function saveScopes() {
-    if (!bid) return
+  async function saveAll() {
+    if (!bid || !edit) return
     setSaving(true)
-    setSaveError(null)
+    setError(null)
     try {
       const payload = {
-        projectName: bid.projectName,
-        clientCompanyId: bid.clientCompany?.id,
-        contactId: bid.contact?.id ?? null,
-        proposalDate: bid.proposalDate ?? null,
-        dueDate: bid.dueDate ?? null,
-        followUpOn: bid.followUpOn ?? null,
-        jobLocation: bid.jobLocation ?? null,
-        leadSource: bid.leadSource ?? null,
-        bidStatus: bid.bidStatus,
+        projectName: edit.projectName.trim(),
+        clientCompanyId: edit.clientCompanyId ?? bid.clientCompany?.id ?? null,
+        contactId: edit.contactId ?? null,
+        proposalDate: edit.proposalDate ? inputToISO(edit.proposalDate) : null,
+        dueDate: edit.dueDate ? inputToISO(edit.dueDate) : null,
+        followUpOn: edit.followUpOn ? inputToISO(edit.followUpOn) : null,
+        jobLocation: edit.jobLocation || null,
+        leadSource: edit.leadSource || null,
+        bidStatus: edit.bidStatus,
         scopes: editScopes.map(s => ({
           name: (s.name || '').trim(),
           cost: Number(s.cost || 0),
@@ -305,133 +289,156 @@ export default function BidDetails() {
         })),
       }
       await putJSON(`/bids/${bid.id}`, payload)
-      // refresh the read-only view
       const refreshed = await getJSON<Bid>(`/bids/${bid.id}`)
       setBid(refreshed)
+      setEdit({
+        projectName: refreshed.projectName,
+        clientCompanyId: refreshed.clientCompany?.id ?? null,
+        contactId: refreshed.contact?.id ?? null,
+        proposalDate: dateToInput(refreshed.proposalDate),
+        dueDate: dateToInput(refreshed.dueDate),
+        followUpOn: dateToInput(refreshed.followUpOn),
+        jobLocation: refreshed.jobLocation ?? '',
+        leadSource: refreshed.leadSource ?? '',
+        bidStatus: refreshed.bidStatus,
+      })
       setEditScopes(refreshed.scopes?.map(s => ({ ...s })) ?? [])
     } catch (e: any) {
-      setSaveError(e?.message || 'Failed to save scopes')
+      setError(e?.message || 'Failed to save changes')
     } finally {
       setSaving(false)
     }
   }
 
-  if (!bid) return <div>Loading…</div>
+  if (!bid || !edit) return <div>Loading…</div>
 
-  const total = bid.scopes.reduce((a, s) => a + Number(s.cost || 0), 0)
-
-  const contactName = bid.contact?.name ?? '—'
-  const contactEmail = bid.contact?.email || null
-  const contactPhone = bid.contact?.phone || null
+  const total = editScopes.reduce((a, s) => a + Number(s.cost || 0), 0)
 
   return (
     <div className="space-y-6">
       {/* Header */}
       <div className="flex items-center justify-between">
-        <h1 className="text-3xl font-extrabold tracking-tight">
-          {bid.projectName}
-        </h1>
+        <h1 className="text-3xl font-extrabold tracking-tight">Edit Bid</h1>
         <div className="flex gap-2">
-          <Link
-            to={`/bids/${bid.id}/edit`}
-            className="rounded-lg bg-blue-600 px-3 py-2 text-white shadow hover:bg-blue-700"
-          >
-            Edit
-          </Link>
-          <button
-            className="rounded-lg bg-slate-900 px-3 py-2 text-white shadow hover:bg-slate-800"
-            onClick={() => navigate(-1)}
-          >
-            Back
-          </button>
+          <Link to={`/bids/${bid.id}`} className="rounded-lg bg-slate-100 px-3 py-2 text-slate-700 hover:bg-slate-200">View</Link>
+          <button className="rounded-lg bg-slate-900 px-3 py-2 text-white hover:bg-slate-800" onClick={() => navigate(-1)}>Back</button>
         </div>
       </div>
 
-      {/* Summary card */}
+      {/* === Bid Info Form === */}
       <div className="rounded-xl bg-white p-6 shadow-soft ring-1 ring-black/5">
-        {/* 4 columns on lg, 2 on md, 1 on small — uniform spacing */}
+        <div className="mb-4 text-lg font-semibold">Bid Information</div>
+
+        <div className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-3">
+
+          <label className="space-y-1">
+            <span className="text-xs font-semibold tracking-widest text-slate-500">PROJECT NAME</span>
+            <input className="input w-full" value={edit.projectName}
+              onChange={e => setEdit(v => v ? { ...v, projectName: e.target.value } : v)} />
+          </label>
+
+          <label className="space-y-1">
+            <span className="text-xs font-semibold tracking-widest text-slate-500">COMPANY</span>
+            {companies.length > 0 ? (
+              <select
+                className="select w-full"
+                value={edit.clientCompanyId ?? ''}
+                onChange={(e) => setEdit(v => v ? { ...v, clientCompanyId: e.target.value ? Number(e.target.value) : null, contactId: null } : v)}
+              >
+                <option value="">— Select company —</option>
+                {companies.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+              </select>
+            ) : (
+              <input
+                className="input w-full"
+                placeholder="Company ID (no /companies endpoint)"
+                value={edit.clientCompanyId ?? ''}
+                onChange={(e) => setEdit(v => v ? { ...v, clientCompanyId: e.target.value ? Number(e.target.value) : null, contactId: null } : v)}
+              />
+            )}
+          </label>
+
+          <label className="space-y-1">
+            <span className="text-xs font-semibold tracking-widest text-slate-500">CONTACT</span>
+            {contacts.length > 0 ? (
+              <select
+                className="select w-full"
+                value={edit.contactId ?? ''}
+                onChange={(e) => setEdit(v => v ? { ...v, contactId: e.target.value ? Number(e.target.value) : null } : v)}
+              >
+                <option value="">— Select contact —</option>
+                {contacts.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+              </select>
+            ) : (
+              <input
+                className="input w-full"
+                placeholder="Contact ID (no /contacts endpoint)"
+                value={edit.contactId ?? ''}
+                onChange={(e) => setEdit(v => v ? { ...v, contactId: e.target.value ? Number(e.target.value) : null } : v)}
+              />
+            )}
+          </label>
+
+          <label className="space-y-1">
+            <span className="text-xs font-semibold tracking-widest text-slate-500">PROPOSAL DATE</span>
+            <input type="date" className="input w-full" value={edit.proposalDate}
+              onChange={e => setEdit(v => v ? { ...v, proposalDate: e.target.value } : v)} />
+          </label>
+
+          <label className="space-y-1">
+            <span className="text-xs font-semibold tracking-widest text-slate-500">DUE DATE</span>
+            <input type="date" className="input w-full" value={edit.dueDate}
+              onChange={e => setEdit(v => v ? { ...v, dueDate: e.target.value } : v)} />
+          </label>
+
+          <label className="space-y-1">
+            <span className="text-xs font-semibold tracking-widest text-slate-500">FOLLOW-UP ON</span>
+            <input type="date" className="input w-full" value={edit.followUpOn}
+              onChange={e => setEdit(v => v ? { ...v, followUpOn: e.target.value } : v)} />
+          </label>
+
+          <label className="space-y-1">
+            <span className="text-xs font-semibold tracking-widest text-slate-500">JOB LOCATION</span>
+            <input className="input w-full" value={edit.jobLocation}
+              onChange={e => setEdit(v => v ? { ...v, jobLocation: e.target.value } : v)} />
+          </label>
+
+          <label className="space-y-1">
+            <span className="text-xs font-semibold tracking-widest text-slate-500">LEAD SOURCE</span>
+            <input className="input w-full" value={edit.leadSource}
+              onChange={e => setEdit(v => v ? { ...v, leadSource: e.target.value } : v)} />
+          </label>
+
+          <label className="space-y-1">
+            <span className="text-xs font-semibold tracking-widest text-slate-500">BID STATUS</span>
+            <select
+              className="select w-full"
+              value={edit.bidStatus}
+              onChange={e => setEdit(v => v ? { ...v, bidStatus: e.target.value as BidStatus } : v)}
+            >
+              <option>Active</option>
+              <option>Complete</option>
+              <option>Archived</option>
+              <option>Hot</option>
+              <option>Cold</option>
+            </select>
+          </label>
+        </div>
+      </div>
+
+      {/* === Read-only summary === */}
+      <div className="rounded-xl bg-white p-6 shadow-soft ring-1 ring-black/5">
         <div className="grid grid-cols-1 gap-6 md:grid-cols-2 lg:grid-cols-4">
           <div className="space-y-1">
-            <div className="text-xs font-semibold tracking-widest text-slate-500">
-              CLIENT
-            </div>
-            <div className="text-slate-900">
-              {bid.clientCompany?.name ?? '—'}
-            </div>
+            <div className="text-xs font-semibold tracking-widest text-slate-500">CLIENT</div>
+            <div className="text-slate-900">{bid.clientCompany?.name ?? '—'}</div>
           </div>
-
-          {/* CONTACT (with email + phone) */}
           <div className="space-y-1">
-            <div className="text-xs font-semibold tracking-widest text-slate-500">
-              CONTACT
-            </div>
-            <div className="text-slate-900">{contactName}</div>
-            <div className="text-sm text-slate-600">
-              {contactEmail ? (
-                <a className="hover:underline" href={`mailto:${contactEmail}`}>
-                  {contactEmail}
-                </a>
-              ) : (
-                '—'
-              )}
-            </div>
-            <div className="text-sm text-slate-600">
-              {contactPhone ? (
-                <a className="hover:underline" href={`tel:${contactPhone}`}>
-                  {contactPhone}
-                </a>
-              ) : (
-                '—'
-              )}
-            </div>
+            <div className="text-xs font-semibold tracking-widest text-slate-500">BID STATUS</div>
+            {pillBadge(edit.bidStatus, 'slate')}
           </div>
-
           <div className="space-y-1">
-            <div className="text-xs font-semibold tracking-widest text-slate-500">
-              PROPOSAL DATE
-            </div>
-            <div className="text-slate-900">{dateFmt(bid.proposalDate)}</div>
-          </div>
-
-          <div className="space-y-1">
-            <div className="text-xs font-semibold tracking-widest text-slate-500">
-              DUE DATE
-            </div>
-            <div className="text-rose-600">{dateFmt(bid.dueDate)}</div>
-          </div>
-
-          <div className="space-y-1">
-            <div className="text-xs font-semibold tracking-widest text-slate-500">
-              FOLLOW-UP IN
-            </div>
-            <div className="text-slate-900">{dateFmt(bid.followUpOn)}</div>
-          </div>
-
-          <div className="space-y-1">
-            <div className="text-xs font-semibold tracking-widest text-slate-500">
-              JOB LOCATION
-            </div>
-            <div className="text-slate-900">{bid.jobLocation || '—'}</div>
-          </div>
-
-          <div className="space-y-1">
-            <div className="text-xs font-semibold tracking-widest text-slate-500">
-              LEAD SOURCE
-            </div>
-            <div className="text-slate-900">{bid.leadSource || '—'}</div>
-          </div>
-
-          <div className="space-y-1">
-            <div className="text-xs font-semibold tracking-widest text-slate-500">
-              BID STATUS
-            </div>
-            {pillBadge(bid.bidStatus, 'slate')}
-          </div>
-
-          <div className="space-y-1">
-            <div className="text-xs font-semibold tracking-widest text-slate-500">
-              TOTAL AMOUNT
-            </div>
+            <div className="text-xs font-semibold tracking-widest text-slate-500">TOTAL AMOUNT</div>
             <div className="text-2xl font-extrabold tracking-tight text-slate-900">
               {currency(total)}
             </div>
@@ -439,9 +446,9 @@ export default function BidDetails() {
         </div>
       </div>
 
-      {/* Scopes (read-only, original) */}
+      {/* === Read-only scopes table === */}
       <div className="rounded-xl bg-white p-6 shadow-soft ring-1 ring-black/5">
-        <div className="mb-3 text-lg font-semibold">Scopes</div>
+        <div className="mb-3 text-lg font-semibold">Existing Scopes</div>
         <div className="-mx-4 overflow-x-auto">
           <table className="min-w-full table-auto">
             <thead>
@@ -455,25 +462,16 @@ export default function BidDetails() {
               {bid.scopes.map((s, i) => (
                 <tr key={i} className="border-t">
                   <td className="px-4 py-3">{s.name}</td>
-                  <td className="px-4 py-3">
-                    {currency(Number(s.cost || 0))}
-                  </td>
+                  <td className="px-4 py-3">{currency(Number(s.cost || 0))}</td>
                   <td className="px-4 py-3">{statusBadge(s.status)}</td>
                 </tr>
               ))}
-              <tr className="border-t font-semibold">
-                <td className="px-4 py-3">Total</td>
-                <td className="px-4 py-3">
-                  {currency(bid.scopes.reduce((a, s) => a + Number(s.cost || 0), 0))}
-                </td>
-                <td className="px-4 py-3"></td>
-              </tr>
             </tbody>
           </table>
         </div>
       </div>
 
-      {/* ------------------ ADDED: Editable Scopes (with dropdown) ------------------ */}
+      {/* === Editable scopes === */}
       <div className="rounded-xl bg-white p-6 shadow-soft ring-1 ring-black/5">
         <div className="mb-3 text-lg font-semibold">Edit Scopes</div>
 
@@ -489,10 +487,7 @@ export default function BidDetails() {
             </div>
             <input
               className="input col-span-3 md:col-span-3"
-              type="number"
-              min={0}
-              step={1}
-              placeholder="Cost"
+              type="number" min={0} step={1} placeholder="Cost"
               value={s.cost}
               onChange={e => setScope(i, 'cost', e.target.value)}
             />
@@ -510,9 +505,7 @@ export default function BidDetails() {
               className="col-span-1 rounded-lg border border-rose-300 px-2 py-1 text-rose-600 hover:bg-rose-50"
               onClick={() => removeScopeRow(i)}
               title="Remove scope"
-            >
-              −
-            </button>
+            >−</button>
           </div>
         ))}
 
@@ -524,20 +517,20 @@ export default function BidDetails() {
           >
             + Add scope
           </button>
-          <div className="ml-auto flex items-center gap-2">
-            {saveError && <span className="text-sm text-rose-600">{saveError}</span>}
+
+          <div className="ml-auto flex items-center gap-3">
+            {error && <span className="text-sm text-rose-600">{error}</span>}
             <button
               type="button"
               className="rounded-lg bg-emerald-600 px-4 py-2 text-white shadow hover:bg-emerald-700 disabled:opacity-60"
-              onClick={saveScopes}
+              onClick={saveAll}
               disabled={saving}
             >
-              {saving ? 'Saving…' : 'Save Scopes'}
+              {saving ? 'Saving…' : 'Save Changes'}
             </button>
           </div>
         </div>
       </div>
-      {/* ---------------- END: Editable Scopes (with dropdown) --------------------- */}
     </div>
   )
 }
