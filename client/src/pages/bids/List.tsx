@@ -11,6 +11,7 @@ type Row = {
   proposalDate?: string | null
   dueDate?: string | null
   followUpOn?: string | null
+  // kept for compatibility with existing API responses; not rendered anymore
   scopeStatus: 'Pending' | 'Won' | 'Lost' | 'Unknown'
   bidStatus: 'Active' | 'Complete' | 'Archived' | 'Hot' | 'Cold'
 }
@@ -232,7 +233,6 @@ export default function Bids() {
               <th className="px-4 py-3 text-left text-sm font-bold uppercase tracking-wider text-slate-600">DUE DATE</th>
               <th className="px-4 py-3 text-left text-sm font-bold uppercase tracking-wider text-slate-600">DUE IN</th>
               <th className="px-4 py-3 text-left text-sm font-bold uppercase tracking-wider text-slate-600">FOLLOW-UP IN</th>
-              <th className="px-4 py-3 text-left text-sm font-bold uppercase tracking-wider text-slate-600">SCOPE STATUS</th>
               <th className="px-4 py-3 text-left text-sm font-bold uppercase tracking-wider text-slate-600">ACTIONS</th>
             </tr>
           </thead>
@@ -251,21 +251,6 @@ export default function Bids() {
                   })()}
                 </td>
                 <td>{fmt(r.followUpOn)}</td>
-                <td>
-                  <span
-                    className={
-                      r.scopeStatus === 'Pending'
-                        ? 'badge badge-yellow'
-                        : r.scopeStatus === 'Won'
-                        ? 'badge badge-green'
-                        : r.scopeStatus === 'Lost'
-                        ? 'badge badge-red'
-                        : 'badge'
-                    }
-                  >
-                    {r.scopeStatus}
-                  </span>
-                </td>
                 <td className="text-left">
                   <div className="inline-flex items-center gap-2">
                     <Link
@@ -290,7 +275,8 @@ export default function Bids() {
             ))}
             {viewRows.length === 0 && (
               <tr>
-                <td colSpan={9} className="py-12 text-center text-slate-500">
+                {/* colSpan reduced by 1 because we removed the Scope Status column */}
+                <td colSpan={8} className="py-12 text-center text-slate-500">
                   No bids found.
                 </td>
               </tr>

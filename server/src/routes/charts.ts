@@ -21,7 +21,6 @@ function parseDate(raw?: string): Date | undefined {
   // Slash formats
   if (/^\d{1,2}\/\d{1,2}\/\d{4}$/.test(raw)) {
     const [a, b, y] = raw.split('/').map(Number)
-    // if first part > 12 -> DD/MM/YYYY, otherwise MM/DD/YYYY
     const mm = a > 12 ? b : a
     const dd = a > 12 ? a : b
     const d = new Date(Date.UTC(y, mm - 1, dd))
@@ -44,48 +43,6 @@ function monthSpan(start: Date, end: Date) {
   return buckets
 }
 
-/* =========================
- *  /charts/metrics
- *  (unchanged logic)
- * ========================= */
-charts.get('/metrics', async (_req, res) => {
-  const bids = await prisma.bid.findMany({ include: { scopes: true } })
-
-  let pending = 0
-  let pendingCount = 0   // <— declare this
-  let wonActive = 0
-  let wonCount = 0
-  let lostCount = 0
-
-  for (const b of bids) {
-    for (const s of b.scopes) {
-      if (s.status === 'Pending') {
-        pending += s.cost
-        pendingCount++       // <— increment whenever Pending
-      }
-      if (b.bidStatus === 'Active' && s.status === 'Won') {
-        wonActive += s.cost
-      }
-      if (b.bidStatus === 'Active') {
-        if (s.status === 'Won') wonCount++
-        if (s.status === 'Lost') lostCount++
-      }
-    }
-  }
-
-  const ratio = (wonCount + lostCount) === 0 ? 0 : wonCount / (wonCount + lostCount)
-
-  res.json({
-    activePipelineValue: pending,
-    totalValueWonActiveBids: wonActive,
-    activeWinLossRatio: ratio,
-    activeWonCount: wonCount,
-    activeLostCount: lostCount,
-    pendingCount, // ✅ now defined
-  })
-})
-
-
 /* Helper to compute [start, end] from query (defaults to last 12 months) */
 function resolveRange(req: any) {
   const startQ = parseDate(req.query.start as string | undefined)
@@ -95,14 +52,11 @@ function resolveRange(req: any) {
   let end: Date
 
   if (startQ && endQ) {
-    start = new Date(startQ)
-    start.setUTCHours(0, 0, 0, 0)
-    end = new Date(endQ)
-    end.setUTCHours(23, 59, 59, 999)
+    start = new Date(startQ); start.setUTCHours(0, 0, 0, 0)
+    end   = new Date(endQ);   end.setUTCHours(23, 59, 59, 999)
   } else {
     const now = new Date()
     end = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 23, 59, 59, 999))
-    // last 12 months inclusive
     start = new Date(end)
     start.setUTCMonth(start.getUTCMonth() - 11)
     start.setUTCDate(1)
@@ -114,10 +68,87 @@ function resolveRange(req: any) {
 
 /** Pick the date we use for charts: proposalDate primarily (fallback to createdAt) */
 function chartDateForBid(b: { proposalDate: Date | null; createdAt: Date }): Date {
-  // If you want STRICT proposal date only, change to:
-  // return b.proposalDate as Date
   return (b.proposalDate ?? b.createdAt) as Date
 }
+
+/* =========================
+ *  /charts/metrics
+ *  KPIs:
+ *   - Win/Loss Ratio (Completed bids only, within start..end)
+ *   - Total Value Won (Completed bids only, within start..end)
+ *   - Active Pipeline Value: bids with bidStatus ∈ {Active, Hot, Cold},
+ *     counting scopes that are NOT 'Lost' (snapshot, no date filter)
+ *   - pendingCount: number of non-Lost scopes under Active/Hot/Cold bids
+ * ========================= */
+// --- inside server/src/routes/charts.ts ---
+
+charts.get('/metrics', async (req, res) => {
+  const { start, end } = resolveRange(req)
+
+  // Active Pipeline (snapshot): bids Active/Hot/Cold; include scopes that are NOT 'Lost'
+  const activeHotColdBids = await prisma.bid.findMany({
+    where: { bidStatus: { in: ['Active', 'Hot', 'Cold'] as any } },
+    include: { scopes: { select: { status: true, cost: true } } },
+  })
+
+  let activePipelineValue = 0
+  let pendingCount = 0
+  for (const b of activeHotColdBids) {
+    for (const s of b.scopes) {
+      if (s.status !== 'Lost') {
+        activePipelineValue += (s.cost || 0)
+        pendingCount += 1
+      }
+    }
+  }
+
+  // Completed bids in [start..end] for Win/Loss + Total Won
+  // Accept both 'Completed' and 'Complete'
+  const COMPLETED_STATUSES = ['Completed', 'Complete'] as const
+
+  const completedRows = await prisma.bid.findMany({
+    where: {
+      bidStatus: { in: COMPLETED_STATUSES as any },
+      OR: [
+        { proposalDate: { gte: start, lte: end } },
+        { AND: [{ proposalDate: null }, { createdAt: { gte: start, lte: end } }] },
+      ],
+    },
+    include: { scopes: true },
+    orderBy: { createdAt: 'asc' },
+  })
+
+  let wonCount = 0
+  let lostCount = 0
+  let totalValueWon = 0
+
+  for (const b of completedRows) {
+    const d = chartDateForBid(b as any)
+    if (d < start || d > end) continue
+
+    for (const s of b.scopes) {
+      if (s.status === 'Won') {
+        wonCount++
+        totalValueWon += (s.cost || 0)
+      } else if (s.status === 'Lost') {
+        lostCount++
+      }
+    }
+  }
+
+  const denom = wonCount + lostCount
+  const activeWinLossRatio = denom === 0 ? 0 : wonCount / denom
+
+  res.json({
+    activePipelineValue,                 // snapshot: non-Lost scopes under Active/Hot/Cold bids
+    totalValueWonActiveBids: totalValueWon, // from Completed/Complete bids in range
+    activeWinLossRatio,                  // from Completed/Complete bids in range
+    activeWonCount: wonCount,
+    activeLostCount: lostCount,
+    pendingCount,
+  })
+})
+
 
 /* =========================
  *  /charts/bids-over
@@ -126,15 +157,10 @@ function chartDateForBid(b: { proposalDate: Date | null; createdAt: Date }): Dat
 charts.get('/bids-over', async (req, res) => {
   const { start, end } = resolveRange(req)
 
-  // We can’t filter by proposalDate with nulls, so we fetch all rows
-  // within the wide possible range using createdAt to reduce scope a bit,
-  // then bucket using proposalDate (with fallback) in-memory.
   const rows = await prisma.bid.findMany({
     where: {
       OR: [
-        // proposalDate in range
         { proposalDate: { gte: start, lte: end } },
-        // or proposalDate null but createdAt in range (fallback)
         { AND: [{ proposalDate: null }, { createdAt: { gte: start, lte: end } }] },
       ],
     },
@@ -182,7 +208,7 @@ charts.get('/value-over', async (req, res) => {
     if (d < start || d > end) continue
 
     const key = monthKey(d)
-    const total = b.scopes.reduce((sum, s) => sum + s.cost, 0)
+    const total = b.scopes.reduce((sum, s) => sum + (s.cost || 0), 0)
     byMonth.set(key, (byMonth.get(key) || 0) + total)
   }
 
@@ -216,7 +242,7 @@ charts.get('/scope-totals', async (req, res) => {
 
     for (const s of b.scopes) {
       if (s.status === 'Won') {
-        totals.set(s.name, (totals.get(s.name) || 0) + s.cost)
+        totals.set(s.name, (totals.get(s.name) || 0) + (s.cost || 0))
       }
     }
   }
