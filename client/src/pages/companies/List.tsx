@@ -1,5 +1,6 @@
+// client/src/pages/companies/List.tsx
 import React from 'react'
-import { Link } from 'react-router-dom'
+import { Link, useNavigate } from 'react-router-dom'
 import { getJSON } from '../../lib/api'
 
 type Row = {
@@ -15,10 +16,18 @@ const currency = (n: number) =>
 
 export default function Companies() {
   const [rows, setRows] = React.useState<Row[]>([])
+  const navigate = useNavigate()
 
   React.useEffect(() => {
     getJSON<Row[]>('/companies').then(setRows)
   }, [])
+
+  // handle selecting a project from the dropdown
+  function handleProjectSelect(e: React.ChangeEvent<HTMLSelectElement>) {
+    const bidId = e.target.value
+    if (!bidId) return // ignore the placeholder
+    navigate(`/bids/${bidId}`)
+  }
 
   return (
     <div className="space-y-4 font-sans">
@@ -63,10 +72,19 @@ export default function Companies() {
                 <td className="px-4 py-3 font-medium text-slate-900">{r.name}</td>
 
                 <td className="px-4 py-3">
-                  <select className="select w-100 sm:w-100">
-                    <option>Projects...</option>
+                  <select
+                    className="select w-100 sm:w-100"
+                    defaultValue=""
+                    aria-label={`Projects for ${r.name}`}
+                    onChange={handleProjectSelect}
+                  >
+                    <option value="" disabled>
+                      Projects...
+                    </option>
                     {r.projects.map((p) => (
-                      <option key={p.id}>{p.name}</option>
+                      <option key={p.id} value={p.id}>
+                        {p.name}
+                      </option>
                     ))}
                   </select>
                 </td>
