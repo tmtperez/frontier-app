@@ -41,7 +41,7 @@ function Navbar() {
         <div className="flex items-center gap-3">
           <div className="w-9 h-9 rounded-lg bg-brand-700 text-white flex items-center justify-center shadow-soft">BF</div>
           <div className="text-lg font-semibold text-ink-900">
-            Barfield Fence & Fabrication, Inc.
+             Frontier Roofing
           </div>
         </div>
         <nav className="flex gap-1 font-semibold">
