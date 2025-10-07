@@ -42,10 +42,10 @@ function Navbar() {
       <div className="container-7xl mx-auto px-4 py-3 flex items-center justify-between">
         <div className="flex items-center gap-3">
           <div className="w-9 h-9 rounded-lg bg-brand-700 text-white flex items-center justify-center shadow-soft">
-            BF
+            FRC
           </div>
           <div className="text-lg font-semibold text-ink-900">
-            Barfield Fence & Fabrication, Inc.
+            Frontier Roofing and Construction LLC
           </div>
         </div>
 
