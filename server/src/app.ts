@@ -12,7 +12,7 @@ import { contacts } from './routes/contacts.js'
 import { charts } from './routes/charts.js'
 import { importer } from './routes/import.js'
 import { errorHandler } from './middleware/error.js'
-import googleRoutes from './routes/google'
+// import googleRoutes from './routes/google'
 import scopeRoutes from './routes/scopes.js'
 import { users } from './routes/users.js'
 import { requireRole } from './middleware/requireRole.js'
@@ -58,7 +58,7 @@ export function createApp() {
   app.use('/api/charts', authRequired, charts)
   app.use('/api/import', authRequired, importer)
   app.use('/api/scopes', authRequired, scopeRoutes)
-  app.use('/api', googleRoutes)
+  // app.use('/api', googleRoutes)
   app.use('/api/users', authRequired, requireRole('ADMIN'), users)
 
   app.use(errorHandler)
