@@ -20,58 +20,7 @@ type BidForm = {
   scopes: ScopeInput[]
 }
 
-// ---------- Scope Catalog (defaults + local persistence) ----------
-const SCOPE_LS_KEY = 'scopeCatalog.v1'
-const DEFAULT_SCOPES = [
-  'Architectural Aluminum',
-  'Canopies',
-  'Awnings',
-  'Pergola',
-  'Trellis',
-  'Arbor',
-  'Shutters',
-  'Cabana',
-  'String Light Poles',
-  'Pool LSE',
-  'Balcony Rail',
-  'Screen',
-  'Perimeter Fence',
-  'Retaining Wall Rail',
-  'ADA Rail',
-  'Pool Fence',
-  'Dog Park Fence',
-  'Wood Fence',
-  'Welded Wire Fence',
-  'Cable Rail',
-  'Pedestrian Gates',
-  'Breezeway Gates',
-  'Entry Gates',
-  'Compactor Gates',
-  'Compactor Rail',
-  'Pool Gates',
-  'Dog Park Gates',
-  'Glass Fence',
-  'Glass Gates',
-  'Chain Link Fence',
-  'PVC Fence',
-] as const
-
-function loadScopeCatalog(): string[] {
-  try {
-    const raw = localStorage.getItem(SCOPE_LS_KEY)
-    const saved: string[] = raw ? JSON.parse(raw) : []
-    const merged = Array.from(new Set([...DEFAULT_SCOPES, ...saved]))
-    return merged.sort((a, b) => a.localeCompare(b))
-  } catch {
-    return [...DEFAULT_SCOPES].sort((a, b) => a.localeCompare(b))
-  }
-}
-
-function saveScopeCatalog(catalog: string[]) {
-  // persist only non-default additions
-  const extras = catalog.filter(s => !(DEFAULT_SCOPES as readonly string[]).includes(s))
-  localStorage.setItem(SCOPE_LS_KEY, JSON.stringify(extras))
-}
+type ScopeCatalogRow = { id: number; name: string }
 
 // Small helper: currency (optional, used for total)
 const currency = (n: number) =>
@@ -146,7 +95,7 @@ function ScopeNameCombo(props: {
   )
 
   function choose(val: string) {
-    onChange(val)
+    props.onChange(val)
     setQuery(val)
     setOpen(false)
   }
@@ -188,15 +137,15 @@ function ScopeNameCombo(props: {
               } else {
                 const val = query.trim()
                 if (!val) return
-                onChange(val)
-                if (!exists && onCommitNew) onCommitNew(val)
+                props.onChange(val)
+                if (!exists && props.onCommitNew) props.onCommitNew(val)
                 setOpen(false)
               }
             } else {
               const val = query.trim()
               if (!val) return
-              onChange(val)
-              if (!exists && onCommitNew) onCommitNew(val)
+              props.onChange(val)
+              if (!exists && props.onCommitNew) props.onCommitNew(val)
             }
           } else if (e.key === 'Escape') {
             setOpen(false)
@@ -205,8 +154,8 @@ function ScopeNameCombo(props: {
         onBlur={() => {
           const val = query.trim()
           if (!val) return
-          onChange(val)
-          if (!exists && onCommitNew) onCommitNew(val)
+          props.onChange(val)
+          if (!exists && props.onCommitNew) props.onCommitNew(val)
         }}
       />
       {open && (
@@ -234,8 +183,8 @@ function ScopeNameCombo(props: {
               onMouseDown={(e) => {
                 e.preventDefault()
                 const val = query.trim()
-                onChange(val)
-                onCommitNew?.(val)
+                props.onChange(val)
+                props.onCommitNew?.(val)
                 setOpen(false)
               }}
             >
@@ -257,8 +206,8 @@ export default function AddBid() {
   const [saving, setSaving]   = React.useState(false)
   const [error, setError]     = React.useState<string | null>(null)
 
-  // scope catalog state
-  const [scopeCatalog, setScopeCatalog] = React.useState<string[]>(() => loadScopeCatalog())
+  // ⬇️ Scope catalog from API (NOT localStorage)
+  const [scopeCatalog, setScopeCatalog] = React.useState<string[]>([])
 
   const [form, setForm] = React.useState<BidForm>({
     projectName: '',
@@ -279,6 +228,11 @@ export default function AddBid() {
       setCompanies(cs.map(c => ({ id: c.id, name: c.name })))
     )
     getJSON<Contact[]>('/contacts').then(setContacts)
+
+    // load scope catalog from server
+    getJSON<ScopeCatalogRow[]>('/scopes')
+      .then(rows => setScopeCatalog(rows.map(r => r.name).sort((a,b)=>a.localeCompare(b))))
+      .catch(() => setScopeCatalog([]))
   }, [])
 
   function setField<K extends keyof BidForm>(key: K, val: BidForm[K]) {
@@ -305,15 +259,17 @@ export default function AddBid() {
     setForm(f => ({ ...f, scopes: f.scopes.filter((_, idx) => idx !== i) }))
   }
 
-  function addToCatalogIfMissing(name: string) {
+  // ⬇️ create missing scope in catalog via API
+  async function addToCatalogIfMissing(name: string) {
     const val = name.trim()
     if (!val) return
     if (scopeCatalog.some(s => s.toLowerCase() === val.toLowerCase())) return
-    setScopeCatalog(prev => {
-      const next = [...prev, val].sort((a, b) => a.localeCompare(b))
-      saveScopeCatalog(next)
-      return next
-    })
+    try {
+      await postJSON('/scopes', { name: val })
+      setScopeCatalog(prev => [...prev, val].sort((a,b)=>a.localeCompare(b)))
+    } catch {
+      // silently ignore for now; could add a toast
+    }
   }
 
   // Filter contacts by selected company if one is chosen

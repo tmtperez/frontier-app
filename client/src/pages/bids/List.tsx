@@ -1,288 +1,521 @@
 import React from 'react'
-import { Link } from 'react-router-dom'
-import { getJSON, uploadFile } from '../../lib/api'
-import { AuthContext } from '../../state/AuthContext'
+import { Link, useNavigate, useParams } from 'react-router-dom'
+import { getJSON, putJSON, postJSON } from '../../lib/api'
 
-type Row = {
+type Company = { id: number; name: string }
+type Contact = {
+  id: number
+  name: string
+  email?: string | null
+  phone?: string | null
+}
+type Scope = { name: string; cost: number; status: 'Pending' | 'Won' | 'Lost' }
+type BidStatus = 'Active' | 'Complete' | 'Archived' | 'Hot' | 'Cold'
+type Bid = {
   id: number
   projectName: string
-  clientName: string
-  amount: number
+  clientCompany: Company
+  contact?: Contact | null
   proposalDate?: string | null
   dueDate?: string | null
   followUpOn?: string | null
-  // kept for compatibility with existing API responses; not rendered anymore
-  scopeStatus: 'Pending' | 'Won' | 'Lost' | 'Unknown'
-  bidStatus: 'Active' | 'Complete' | 'Archived' | 'Hot' | 'Cold'
+  jobLocation?: string | null
+  leadSource?: string | null
+  bidStatus: BidStatus
+  scopes: Scope[]
 }
 
-function currency(n: number) {
-  return n.toLocaleString(undefined, {
-    style: 'currency',
-    currency: 'USD',
-    maximumFractionDigits: 0,
-  })
+type ScopeCatalogRow = { id: number; name: string }
+
+/* ----------------------- helpers ----------------------- */
+const currency = (n: number) =>
+  n.toLocaleString(undefined, { style: 'currency', currency: 'USD' })
+
+const dateToInput = (d?: string | null) => (d ? d.slice(0, 10) : '')
+
+const inputToISO = (v: string) => (v ? `${v}T00:00:00Z` : null)
+
+function statusBadge(s: 'Pending' | 'Won' | 'Lost') {
+  const base = 'inline-flex items-center rounded-full px-3 py-1 text-sm font-semibold'
+  if (s === 'Won') return <span className={`${base} bg-emerald-100 text-emerald-700`}>Won</span>
+  if (s === 'Lost') return <span className={`${base} bg-rose-100 text-rose-700`}>Lost</span>
+  return <span className={`${base} bg-amber-100 text-amber-700`}>Pending</span>
 }
 
-// small, tolerant date helpers (handles ISO nicely; returns stable YYYY-MM-DD)
-function parseDate(v?: string | null): Date | null {
-  if (!v) return null
-  const d = new Date(v)
-  return isNaN(d.getTime()) ? null : d
-}
-const fmt = (v?: string | null) => {
-  const d = parseDate(v)
-  return d ? d.toISOString().slice(0, 10) : '—'
-}
-const daysBetween = (a?: string | null, b?: string | null) => {
-  const A = parseDate(a)?.getTime()
-  const B = parseDate(b)?.getTime()
-  if (A == null || B == null) return null
-  // ceil so partial days count as 1
-  return Math.max(0, Math.ceil((B - A) / 86_400_000))
+function pillBadge(text: string, tone: 'blue' | 'slate' = 'slate') {
+  const map: Record<string, string> = {
+    blue: 'bg-blue-100 text-blue-700',
+    slate: 'bg-slate-100 text-slate-700',
+  }
+  return (
+    <span className={`inline-flex items-center rounded-full px-3 py-1 text-sm font-semibold ${map[tone]}`}>
+      {text}
+    </span>
+  )
 }
 
-type SortBy = 'proposalDate' | 'dueDate' | 'dueIn'
-type SortDir = 'asc' | 'desc'
+/* ---------------- scope combobox (unchanged UI) --------------- */
+function ScopeNameCombo(props: {
+  value: string
+  onChange: (val: string) => void
+  onCommitNew?: (val: string) => void
+  catalog: string[]
+}) {
+  const { value, onChange, onCommitNew, catalog } = props
+  const [open, setOpen] = React.useState(false)
+  const [query, setQuery] = React.useState(value ?? '')
+  const [activeIdx, setActiveIdx] = React.useState<number>(-1)
+  const containerRef = React.useRef<HTMLDivElement>(null)
 
-export default function Bids() {
-  const auth = React.useContext(AuthContext)
+  React.useEffect(() => setQuery(value ?? ''), [value])
 
-  const [tab, setTab] = React.useState<
-    'Active' | 'Complete' | 'Archived' | 'Hot' | 'Cold'
-  >('Active')
-  const [rows, setRows] = React.useState<Row[]>([])
-  const [search, setSearch] = React.useState('')
+  const options = React.useMemo(() => {
+    const q = query.trim().toLowerCase()
+    if (!q) return catalog
+    return catalog.filter(s => s.toLowerCase().includes(q))
+  }, [query, catalog])
 
-  // createdAt range
-  const [from, setFrom] = React.useState<string>('')
-  const [to, setTo] = React.useState<string>('')
+  const exists = React.useMemo(
+    () => catalog.some(s => s.toLowerCase() === query.trim().toLowerCase()),
+    [catalog, query]
+  )
 
-  // due-in filter and sorting controls
-  const [dueInMax, setDueInMax] = React.useState<string>('') // user types a number; we treat as "≤ X"
-  const [sortBy, setSortBy] = React.useState<SortBy>('dueDate')
-  const [sortDir, setSortDir] = React.useState<SortDir>('asc')
-
-  const load = React.useCallback(() => {
-    const q = new URLSearchParams()
-    q.set('status', tab)
-    if (search) q.set('search', search)
-    if (from) q.set('createdFrom', from)
-    if (to) q.set('createdTo', to)
-    getJSON<Row[]>(`/bids?${q.toString()}`).then(setRows)
-  }, [tab, search, from, to])
-
-  React.useEffect(() => { load() }, [load])
-
-  async function onImport(e: React.ChangeEvent<HTMLInputElement>) {
-    const f = e.target.files?.[0]
-    if (!f) return
-    await uploadFile('/import/bids', f)
-    alert('Import complete')
-    load()
+  function choose(val: string) {
+    onChange(val)
+    setQuery(val)
+    setOpen(false)
   }
 
-  // derived view with (1) due-in filter, (2) sorting
-  const viewRows = React.useMemo(() => {
-    let r = rows.map(row => {
-      const dueIn = daysBetween(row.proposalDate ?? null, row.dueDate ?? null)
-      return { ...row, _dueIn: dueIn } as Row & { _dueIn: number | null }
-    })
-
-    // filter: "Due in ≤ X days" if provided
-    const max = Number(dueInMax)
-    if (dueInMax !== '' && Number.isFinite(max)) {
-      r = r.filter(row => row._dueIn !== null && row._dueIn <= max)
+  React.useEffect(() => {
+    function onDoc(e: MouseEvent) {
+      if (!containerRef.current) return
+      if (!containerRef.current.contains(e.target as Node)) setOpen(false)
     }
-
-    // sorting
-    r.sort((a, b) => {
-      const pick = (row: any) => {
-        if (sortBy === 'dueIn') return row._dueIn
-        if (sortBy === 'proposalDate') return parseDate(row.proposalDate)?.getTime() ?? null
-        // dueDate
-        return parseDate(row.dueDate)?.getTime() ?? null
-      }
-      const va = pick(a)
-      const vb = pick(b)
-
-      // nulls last
-      if (va == null && vb == null) return 0
-      if (va == null) return 1
-      if (vb == null) return -1
-
-      const diff = (va as number) - (vb as number)
-      return sortDir === 'asc' ? diff : -diff
-    })
-
-    return r
-  }, [rows, dueInMax, sortBy, sortDir])
-
-  const pillBase =
-    'px-3 py-1.5 rounded-full border border-slate-200 font-medium text-sm transition ' +
-    'hover:bg-slate-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-slate-300'
+    document.addEventListener('mousedown', onDoc)
+    return () => document.removeEventListener('mousedown', onDoc)
+  }, [])
 
   return (
-    <div className="space-y-4 font-sans">
-      {/* Title + search + import */}
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div className="text-2xl font-extrabold tracking-tight">All Bids</div>
-        <div className="flex items-center gap-2">
-          <input
-            className="input w-56 sm:w-72"
-            placeholder="Search project, client, contact…"
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-          />
-          {/* Green Import button */}
-          <label className="cursor-pointer px-4 py-2 rounded-md bg-green-500 text-white text-sm font-medium shadow hover:bg-green-600 transition">
-            <input type="file" accept=".csv" onChange={onImport} className="hidden" />
-            Import Bids
+    <div ref={containerRef} className="relative">
+      <input
+        className="input w-full"
+        placeholder="Scope Name"
+        value={query}
+        onFocus={() => setOpen(true)}
+        onChange={e => { setQuery(e.target.value); setOpen(true) }}
+        onKeyDown={(e) => {
+          if (e.key === 'ArrowDown') { e.preventDefault(); setOpen(true); setActiveIdx(i => Math.min(i + 1, options.length - 1)) }
+          else if (e.key === 'ArrowUp') { e.preventDefault(); setActiveIdx(i => Math.max(i - 1, -1)) }
+          else if (e.key === 'Enter') {
+            e.preventDefault()
+            if (open) {
+              if (activeIdx >= 0 && activeIdx < options.length) choose(options[activeIdx])
+              else {
+                const val = query.trim(); if (!val) return
+                onChange(val); if (!exists && onCommitNew) onCommitNew(val); setOpen(false)
+              }
+            } else {
+              const val = query.trim(); if (!val) return
+              onChange(val); if (!exists && onCommitNew) onCommitNew(val)
+            }
+          } else if (e.key === 'Escape') { setOpen(false) }
+        }}
+        onBlur={() => {
+          const val = query.trim(); if (!val) return
+          onChange(val); if (!exists && onCommitNew) onCommitNew(val)
+        }}
+      />
+      {open && (
+        <div className="absolute z-20 mt-1 max-h-56 w-full overflow-auto rounded-lg border border-slate-200 bg-white shadow">
+          {options.length > 0 ? (
+            options.map((opt, idx) => (
+              <div
+                key={opt}
+                className={`cursor-pointer px-3 py-2 text-sm hover:bg-slate-50 ${idx === activeIdx ? 'bg-slate-50' : ''}`}
+                onMouseEnter={() => setActiveIdx(idx)}
+                onMouseDown={(e) => { e.preventDefault(); choose(opt) }}
+              >
+                {opt}
+              </div>
+            ))
+          ) : (
+            <div className="px-3 py-2 text-sm text-slate-500">No matches</div>
+          )}
+          {!exists && query.trim() && (
+            <div
+              className="border-t px-3 py-2 text-sm text-emerald-700 cursor-pointer hover:bg-emerald-50"
+              onMouseDown={(e) => {
+                e.preventDefault()
+                const val = query.trim()
+                onChange(val); onCommitNew?.(val); setOpen(false)
+              }}
+            >
+              + Add “{query.trim()}”
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
+/* --------------------- MAIN --------------------- */
+export default function BidEdit() {
+  const { id } = useParams()
+  const navigate = useNavigate()
+
+  const [bid, setBid] = React.useState<Bid | null>(null)
+
+  // editable form state (besides scopes)
+  const [edit, setEdit] = React.useState<{
+    projectName: string
+    clientCompanyId: number | null
+    contactId: number | null
+    proposalDate: string
+    dueDate: string
+    followUpOn: string
+    jobLocation: string
+    leadSource: string
+    bidStatus: BidStatus
+  } | null>(null)
+
+  // ⬇️ Catalog from API, not localStorage
+  const [scopeCatalog, setScopeCatalog] = React.useState<string[]>([])
+  const [editScopes, setEditScopes] = React.useState<Scope[]>([])
+
+  // picklists
+  const [companies, setCompanies] = React.useState<Company[]>([])
+  const [contacts, setContacts] = React.useState<Contact[]>([])
+
+  const [saving, setSaving] = React.useState(false)
+  const [error, setError] = React.useState<string | null>(null)
+
+  React.useEffect(() => {
+    getJSON<Bid>(`/bids/${id}`).then((b) => {
+      setBid(b)
+      setEdit({
+        projectName: b.projectName,
+        clientCompanyId: b.clientCompany?.id ?? null,
+        contactId: b.contact?.id ?? null,
+        proposalDate: dateToInput(b.proposalDate),
+        dueDate: dateToInput(b.dueDate),
+        followUpOn: dateToInput(b.followUpOn),
+        jobLocation: b.jobLocation ?? '',
+        leadSource: b.leadSource ?? '',
+        bidStatus: b.bidStatus,
+      })
+      setEditScopes(b.scopes?.map(s => ({ ...s })) ?? [])
+    })
+  }, [id])
+
+  // load companies (best-effort)
+  React.useEffect(() => {
+    getJSON<Company[]>('/companies').then(setCompanies).catch(() => {})
+  }, [])
+
+  // load contacts when company changes (best-effort)
+  React.useEffect(() => {
+    if (!edit?.clientCompanyId) { setContacts([]); return }
+    getJSON<Contact[]>(`/contacts?companyId=${edit.clientCompanyId}`).then(setContacts).catch(() => {})
+  }, [edit?.clientCompanyId])
+
+  // ⬇️ Load scope catalog from server
+  React.useEffect(() => {
+    getJSON<ScopeCatalogRow[]>('/scopes')
+      .then(rows => setScopeCatalog(rows.map(r => r.name).sort((a,b)=>a.localeCompare(b))))
+      .catch(() => setScopeCatalog([]))
+  }, [])
+
+  // ⬇️ Add to catalog on server if missing
+  async function addToCatalogIfMissing(name: string) {
+    const val = (name || '').trim()
+    if (!val) return
+    if (scopeCatalog.some(s => s.toLowerCase() === val.toLowerCase())) return
+    try {
+      await postJSON('/scopes', { name: val })
+      setScopeCatalog(prev => [...prev, val].sort((a,b)=>a.localeCompare(b)))
+    } catch {
+      // optional toast
+    }
+  }
+
+  function setScope(i: number, key: keyof Scope, val: any) {
+    setEditScopes(scopes =>
+      scopes.map((s, idx) =>
+        idx === i ? { ...s, [key]: key === 'cost' ? Number(val || 0) : val } : s
+      )
+    )
+  }
+  function addScopeRow() {
+    setEditScopes(scopes => [...scopes, { name: '', cost: 0, status: 'Pending' }])
+  }
+  function removeScopeRow(i: number) {
+    setEditScopes(scopes => scopes.filter((_, idx) => idx !== i))
+  }
+
+  async function saveAll() {
+    if (!bid || !edit) return
+    setSaving(true)
+    setError(null)
+    try {
+      const payload = {
+        projectName: edit.projectName.trim(),
+        clientCompanyId: edit.clientCompanyId ?? bid.clientCompany?.id ?? null,
+        contactId: edit.contactId ?? null,
+        proposalDate: edit.proposalDate ? inputToISO(edit.proposalDate) : null,
+        dueDate: edit.dueDate ? inputToISO(edit.dueDate) : null,
+        followUpOn: edit.followUpOn ? inputToISO(edit.followUpOn) : null,
+        jobLocation: edit.jobLocation || null,
+        leadSource: edit.leadSource || null,
+        bidStatus: edit.bidStatus,
+        scopes: editScopes.map(s => ({
+          name: (s.name || '').trim(),
+          cost: Number(s.cost || 0),
+          status: s.status,
+        })),
+      }
+      await putJSON(`/bids/${bid.id}`, payload)
+      const refreshed = await getJSON<Bid>(`/bids/${bid.id}`)
+      setBid(refreshed)
+      setEdit({
+        projectName: refreshed.projectName,
+        clientCompanyId: refreshed.clientCompany?.id ?? null,
+        contactId: refreshed.contact?.id ?? null,
+        proposalDate: dateToInput(refreshed.proposalDate),
+        dueDate: dateToInput(refreshed.dueDate),
+        followUpOn: dateToInput(refreshed.followUpOn),
+        jobLocation: refreshed.jobLocation ?? '',
+        leadSource: refreshed.leadSource ?? '',
+        bidStatus: refreshed.bidStatus,
+      })
+      setEditScopes(refreshed.scopes?.map(s => ({ ...s })) ?? [])
+    } catch (e: any) {
+      setError(e?.message || 'Failed to save changes')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  if (!bid || !edit) return <div>Loading…</div>
+
+  const total = editScopes.reduce((a, s) => a + Number(s.cost || 0), 0)
+
+  return (
+    <div className="space-y-6">
+      {/* Header */}
+      <div className="flex items-center justify-between">
+        <h1 className="text-3xl font-extrabold tracking-tight">Edit Bid</h1>
+        <div className="flex gap-2">
+          <Link to={`/bids/${bid.id}`} className="rounded-lg bg-slate-100 px-3 py-2 text-slate-700 hover:bg-slate-200">View</Link>
+          <button className="rounded-lg bg-slate-900 px-3 py-2 text-white hover:bg-slate-800" onClick={() => navigate(-1)}>Back</button>
+        </div>
+      </div>
+
+      {/* === Bid Info Form === */}
+      <div className="rounded-xl bg-white p-6 shadow-soft ring-1 ring-black/5">
+        <div className="mb-4 text-lg font-semibold">Bid Information</div>
+
+        <div className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-3">
+
+          <label className="space-y-1">
+            <span className="text-xs font-semibold tracking-widest text-slate-500">PROJECT NAME</span>
+            <input className="input w-full" value={edit.projectName}
+              onChange={e => setEdit(v => v ? { ...v, projectName: e.target.value } : v)} />
+          </label>
+
+          <label className="space-y-1">
+            <span className="text-xs font-semibold tracking-widest text-slate-500">COMPANY</span>
+            {companies.length > 0 ? (
+              <select
+                className="select w-full"
+                value={edit.clientCompanyId ?? ''}
+                onChange={(e) => setEdit(v => v ? { ...v, clientCompanyId: e.target.value ? Number(e.target.value) : null, contactId: null } : v)}
+              >
+                <option value="">— Select company —</option>
+                {companies.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+              </select>
+            ) : (
+              <input
+                className="input w-full"
+                placeholder="Company ID (no /companies endpoint)"
+                value={edit.clientCompanyId ?? ''}
+                onChange={(e) => setEdit(v => v ? { ...v, clientCompanyId: e.target.value ? Number(e.target.value) : null, contactId: null } : v)}
+              />
+            )}
+          </label>
+
+          <label className="space-y-1">
+            <span className="text-xs font-semibold tracking-widest text-slate-500">CONTACT</span>
+            {contacts.length > 0 ? (
+              <select
+                className="select w-full"
+                value={edit.contactId ?? ''}
+                onChange={(e) => setEdit(v => v ? { ...v, contactId: e.target.value ? Number(e.target.value) : null } : v)}
+              >
+                <option value="">— Select contact —</option>
+                {contacts.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+              </select>
+            ) : (
+              <input
+                className="input w-full"
+                placeholder="Contact ID (no /contacts endpoint)"
+                value={edit.contactId ?? ''}
+                onChange={(e) => setEdit(v => v ? { ...v, contactId: e.target.value ? Number(e.target.value) : null } : v)}
+              />
+            )}
+          </label>
+
+          <label className="space-y-1">
+            <span className="text-xs font-semibold tracking-widest text-slate-500">PROPOSAL DATE</span>
+            <input type="date" className="input w-full" value={edit.proposalDate}
+              onChange={e => setEdit(v => v ? { ...v, proposalDate: e.target.value } : v)} />
+          </label>
+
+          <label className="space-y-1">
+            <span className="text-xs font-semibold tracking-widest text-slate-500">DUE DATE</span>
+            <input type="date" className="input w-full" value={edit.dueDate}
+              onChange={e => setEdit(v => v ? { ...v, dueDate: e.target.value } : v)} />
+          </label>
+
+          <label className="space-y-1">
+            <span className="text-xs font-semibold tracking-widest text-slate-500">FOLLOW-UP ON</span>
+            <input type="date" className="input w-full" value={edit.followUpOn}
+              onChange={e => setEdit(v => v ? { ...v, followUpOn: e.target.value } : v)} />
+          </label>
+
+          <label className="space-y-1">
+            <span className="text-xs font-semibold tracking-widest text-slate-500">JOB LOCATION</span>
+            <input className="input w-full" value={edit.jobLocation}
+              onChange={e => setEdit(v => v ? { ...v, jobLocation: e.target.value } : v)} />
+          </label>
+
+          <label className="space-y-1">
+            <span className="text-xs font-semibold tracking-widest text-slate-500">LEAD SOURCE</span>
+            <input className="input w-full" value={edit.leadSource}
+              onChange={e => setEdit(v => v ? { ...v, leadSource: e.target.value } : v)} />
+          </label>
+
+          <label className="space-y-1">
+            <span className="text-xs font-semibold tracking-widest text-slate-500">BID STATUS</span>
+            <select
+              className="select w-full"
+              value={edit.bidStatus}
+              onChange={e => setEdit(v => v ? { ...v, bidStatus: e.target.value as BidStatus } : v)}
+            >
+              <option>Active</option>
+              <option>Complete</option>
+              <option>Archived</option>
+              <option>Hot</option>
+              <option>Cold</option>
+            </select>
           </label>
         </div>
       </div>
 
-      {/* Filters row */}
-      <div className="flex flex-wrap items-center gap-3">
-        <span className="text-sm text-slate-600">Created:</span>
-        <input
-          type="date"
-          className="input !w-28 sm:!w-40"
-          value={from}
-          onChange={(e) => setFrom(e.target.value)}
-        />
-        <span className="text-sm text-slate-600">to</span>
-        <input
-          type="date"
-          className="input !w-28 sm:!w-40"
-          value={to}
-          onChange={(e) => setTo(e.target.value)}
-        />
-        <button
-          type="button"
-          className="px-4 py-2 rounded-md bg-red-500 text-white text-sm font-medium shadow hover:bg-red-600 transition"
-          onClick={() => { setFrom(''); setTo('') }}
-        >
-          Clear
-        </button>
-
-        {/* Due-in filter */}
-        <div className="ml-4 flex items-center gap-2">
-          <span className="text-sm text-slate-600">Due in ≤</span>
-          <input
-            type="number"
-            min={0}
-            className="input !w-24"
-            placeholder="days"
-            value={dueInMax}
-            onChange={(e) => setDueInMax(e.target.value)}
-          />
-          <span className="text-sm text-slate-600">days</span>
-        </div>
-
-        {/* Sorting controls */}
-        <div className="ml-auto flex items-center gap-2">
-          <span className="text-sm text-slate-600">Sort by:</span>
-          <select
-            className="input !w-36"
-            value={sortBy}
-            onChange={e => setSortBy(e.target.value as SortBy)}
-          >
-            <option value="proposalDate">Proposal Date</option>
-            <option value="dueDate">Due Date</option>
-            <option value="dueIn">Due in (days)</option>
-          </select>
-          <select
-            className="input !w-32"
-            value={sortDir}
-            onChange={e => setSortDir(e.target.value as SortDir)}
-          >
-            <option value="asc">Ascending</option>
-            <option value="desc">Descending</option>
-          </select>
+      {/* === Read-only summary === */}
+      <div className="rounded-xl bg-white p-6 shadow-soft ring-1 ring-black/5">
+        <div className="grid grid-cols-1 gap-6 md:grid-cols-2 lg:grid-cols-4">
+          <div className="space-y-1">
+            <div className="text-xs font-semibold tracking-widest text-slate-500">CLIENT</div>
+            <div className="text-slate-900">{bid.clientCompany?.name ?? '—'}</div>
+          </div>
+          <div className="space-y-1">
+            <div className="text-xs font-semibold tracking-widest text-slate-500">BID STATUS</div>
+            {pillBadge(edit.bidStatus, 'slate')}
+          </div>
+          <div className="space-y-1">
+            <div className="text-xs font-semibold tracking-widest text-slate-500">TOTAL AMOUNT</div>
+            <div className="text-2xl font-extrabold tracking-tight text-slate-900">
+              {currency(total)}
+            </div>
+          </div>
         </div>
       </div>
 
-      {/* Status Tabs */}
-      <div className="flex gap-2">
-        {(['Active', 'Complete', 'Archived', 'Hot', 'Cold'] as const).map((s) => {
-          const active = tab === s
-          return (
-            <button
-              key={s}
-              onClick={() => setTab(s)}
-              className={
-                pillBase + ' ' + (active ? 'bg-slate-900 text-white shadow' : 'bg-white text-slate-700')
-              }
+      {/* === Read-only scopes table === */}
+      <div className="rounded-xl bg-white p-6 shadow-soft ring-1 ring-black/5">
+        <div className="mb-3 text-lg font-semibold">Existing Scopes</div>
+        <div className="-mx-4 overflow-x-auto">
+          <table className="min-w-full table-auto">
+            <thead>
+              <tr className="text-left text-sm text-slate-500">
+                <th className="px-4 py-3 font-medium">Scope</th>
+                <th className="px-4 py-3 font-medium w-48">Cost</th>
+                <th className="px-4 py-3 font-medium w-40">Status</th>
+              </tr>
+            </thead>
+            <tbody className="text-slate-700">
+              {bid.scopes.map((s, i) => (
+                <tr key={i} className="border-t">
+                  <td className="px-4 py-3">{s.name}</td>
+                  <td className="px-4 py-3">{currency(Number(s.cost || 0))}</td>
+                  <td className="px-4 py-3">{statusBadge(s.status)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      {/* === Editable scopes === */}
+      <div className="rounded-xl bg-white p-6 shadow-soft ring-1 ring-black/5">
+        <div className="mb-3 text-lg font-semibold">Edit Scopes</div>
+
+        {editScopes.map((s, i) => (
+          <div key={i} className="mb-2 grid grid-cols-12 items-center gap-2">
+            <div className="col-span-5 md:col-span-5">
+              <ScopeNameCombo
+                value={s.name}
+                catalog={scopeCatalog}
+                onChange={(val) => setScope(i, 'name', val)}
+                onCommitNew={(val) => addToCatalogIfMissing(val)}
+              />
+            </div>
+            <input
+              className="input col-span-3 md:col-span-3"
+              type="number" min={0} step={1} placeholder="Cost"
+              value={s.cost}
+              onChange={e => setScope(i, 'cost', e.target.value)}
+            />
+            <select
+              className="select col-span-3 md:col-span-3"
+              value={s.status}
+              onChange={e => setScope(i, 'status', e.target.value as Scope['status'])}
             >
-              {s}
-            </button>
-          )
-        })}
-      </div>
+              <option>Pending</option>
+              <option>Won</option>
+              <option>Lost</option>
+            </select>
+            <button
+              type="button"
+              className="col-span-1 rounded-lg border border-rose-300 px-2 py-1 text-rose-600 hover:bg-rose-50"
+              onClick={() => removeScopeRow(i)}
+              title="Remove scope"
+            >−</button>
+          </div>
+        ))}
 
-      {/* Table */}
-      <div className="card overflow-hidden">
-        <table className="table">
-          <thead>
-            <tr>
-              <th className="px-4 py-3 text-left text-sm font-bold uppercase tracking-wider text-slate-600">PROJECT NAME</th>
-              <th className="px-4 py-3 text-left text-sm font-bold uppercase tracking-wider text-slate-600">CLIENT</th>
-              <th className="px-4 py-3 text-left text-sm font-bold uppercase tracking-wider text-slate-600">AMOUNT</th>
-              <th className="px-4 py-3 text-left text-sm font-bold uppercase tracking-wider text-slate-600">PROPOSAL DATE</th>
-              <th className="px-4 py-3 text-left text-sm font-bold uppercase tracking-wider text-slate-600">DUE DATE</th>
-              <th className="px-4 py-3 text-left text-sm font-bold uppercase tracking-wider text-slate-600">DUE IN</th>
-              <th className="px-4 py-3 text-left text-sm font-bold uppercase tracking-wider text-slate-600">FOLLOW-UP IN</th>
-              <th className="px-4 py-3 text-left text-sm font-bold uppercase tracking-wider text-slate-600">ACTIONS</th>
-            </tr>
-          </thead>
-          <tbody>
-            {viewRows.map((r) => (
-              <tr key={r.id} className="border-t">
-                <td className="font-medium">{r.projectName}</td>
-                <td>{r.clientName}</td>
-                <td>{currency(r.amount)}</td>
-                <td>{fmt(r.proposalDate)}</td>
-                <td className="text-red-600">{fmt(r.dueDate)}</td>
-                <td>
-                  {(() => {
-                    const n = daysBetween(r.proposalDate ?? null, r.dueDate ?? null)
-                    return typeof n === 'number' ? `${n} day${n === 1 ? '' : 's'}` : '—'
-                  })()}
-                </td>
-                <td>{fmt(r.followUpOn)}</td>
-                <td className="text-left">
-                  <div className="inline-flex items-center gap-2">
-                    <Link
-                      to={`/bids/${r.id}`}
-                      className="px-3 py-1.5 rounded-md bg-slate-100 text-slate-600 hover:bg-slate-200 text-sm font-normal transition"
-                    >
-                      Details
-                    </Link>
-                    {(auth.user?.role === 'ADMIN' ||
-                      auth.user?.role === 'MANAGER' ||
-                      auth.user?.role === 'ESTIMATOR') && (
-                      <Link
-                        to={`/bids/${r.id}/edit`}
-                        className="px-3 py-1.5 rounded-md bg-blue-100 text-blue-600 hover:bg-blue-200 text-sm font-normal transition"
-                      >
-                        Edit
-                      </Link>
-                    )}
-                  </div>
-                </td>
-              </tr>
-            ))}
-            {viewRows.length === 0 && (
-              <tr>
-                {/* colSpan reduced by 1 because we removed the Scope Status column */}
-                <td colSpan={8} className="py-12 text-center text-slate-500">
-                  No bids found.
-                </td>
-              </tr>
-            )}
-          </tbody>
-        </table>
+        <div className="flex items-center gap-2 pt-2">
+          <button
+            type="button"
+            className="rounded-lg border border-slate-300 px-3 py-1.5 text-slate-700 hover:bg-slate-50"
+            onClick={addScopeRow}
+          >
+            + Add scope
+          </button>
+
+          <div className="ml-auto flex items-center gap-3">
+            {error && <span className="text-sm text-rose-600">{error}</span>}
+            <button
+              type="button"
+              className="rounded-lg bg-emerald-600 px-4 py-2 text-white shadow hover:bg-emerald-700 disabled:opacity-60"
+              onClick={saveAll}
+              disabled={saving}
+            >
+              {saving ? 'Saving…' : 'Save Changes'}
+            </button>
+          </div>
+        </div>
       </div>
     </div>
   )

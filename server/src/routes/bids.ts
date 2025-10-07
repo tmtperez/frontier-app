@@ -1,16 +1,20 @@
 // server/routes/bids.ts
-import { Router } from 'express';
-import { prisma } from '../db.js';
-import { aggregateScopeStatus, totalAmount } from '../utils/aggregate.js';
-import type { BidInput } from '../types.js';
-import { requireRole } from '../middleware/permissions.js';
-import { canAccessBid } from '../middleware/permissions.js'; // for read/update by id
+import { Router } from 'express'
+import { prisma } from '../db.js'
+import { aggregateScopeStatus, totalAmount } from '../utils/aggregate.js'
+import type { BidInput } from '../types.js'
+import { requireRole } from '../middleware/permissions.js'
+import { canAccessBid } from '../middleware/permissions.js'
+import { authRequired } from '../middleware/auth.js'
 
 export const bids = Router()
 
-// ---------------------------
-// Permission helpers (inline)
-// ---------------------------
+// All bid routes require a valid JWT (req.user populated)
+bids.use(authRequired)
+
+/* ---------------------------
+   Permission helpers (inline)
+---------------------------- */
 type Role = 'ADMIN' | 'MANAGER' | 'ESTIMATOR' | 'VIEWER'
 type Action = 'read' | 'create' | 'update' | 'delete'
 
@@ -21,10 +25,10 @@ declare module 'express-serve-static-core' {
 }
 
 const ROLE_PERMS: Record<Role, Action[]> = {
-  ADMIN: ['read', 'create', 'update', 'delete'],
-  MANAGER: ['read', 'create', 'update'],
-  ESTIMATOR: ['read', 'create', 'update'],
-  VIEWER: ['read'],
+  ADMIN:     ['read', 'create', 'update', 'delete'],
+  MANAGER:   ['read', 'create', 'update'],
+  ESTIMATOR: ['read', 'create', 'update', 'delete'],
+  VIEWER:    ['read'],
 }
 
 function can(req: any, action: Action) {
@@ -35,30 +39,41 @@ function can(req: any, action: Action) {
 
 function requirePerm(action: Action) {
   return (req: any, res: any, next: any) => {
-    if (!can(req, action)) {
-      return res.status(403).json({ error: 'Forbidden' })
-    }
+    if (!can(req, action)) return res.status(403).json({ error: 'Forbidden' })
     next()
   }
 }
 
-// Optional: redaction for low-privilege viewers
+// Redact some fields for VIEWER role in list endpoints
 function redactForViewer<T extends Record<string, any>>(req: any, rows: T[]) {
   if (req.user?.role !== 'VIEWER') return rows
-  return rows.map(row => ({
-    ...row,
-    amount: null,
-    scopes: undefined,
-  }))
+  return rows.map(row => ({ ...row, amount: null, scopes: undefined }))
 }
 
-// ---------------------------------------------------------------------------
-// List bids (status/search/date-range)
-//   - status=Active|Complete|Archived|Hot|Cold
-//   - search=string
-//   - createdFrom=YYYY-MM-DD
-//   - createdTo=YYYY-MM-DD
-// ---------------------------------------------------------------------------
+/* ---------------------------
+   Helpers
+---------------------------- */
+const parseDateOrNull = (v: any) => (v ? new Date(v) : null)
+
+type ScopeIn = { name?: string; cost?: any; status?: any }
+const VALID_SCOPE_STATUS = new Set(['Pending', 'Won', 'Lost'])
+
+function sanitizeScopes(raw: ScopeIn[] | undefined | null) {
+  if (!raw || !Array.isArray(raw)) return []
+  return raw
+    .map(s => ({
+      name: String(s.name ?? '').trim(),
+      cost: Number(s.cost ?? 0) || 0,
+      status: VALID_SCOPE_STATUS.has(String(s.status))
+        ? (String(s.status) as 'Pending' | 'Won' | 'Lost')
+        : 'Pending',
+    }))
+    .filter(s => s.name.length > 0)
+}
+
+/* ---------------------------------------------------------------------------
+   GET /bids
+--------------------------------------------------------------------------- */
 bids.get('/', requirePerm('read'), async (req, res, next) => {
   try {
     const status = (req.query.status as string) || undefined
@@ -106,7 +121,7 @@ bids.get('/', requirePerm('read'), async (req, res, next) => {
       amount: totalAmount(b.scopes),
       proposalDate: b.proposalDate ?? null,
       dueDate: b.dueDate ?? null,
-      followUpOn: b.followUpOn ?? null,     // NEW
+      followUpOn: b.followUpOn ?? null,
       scopeStatus: aggregateScopeStatus(b.scopes),
       bidStatus: b.bidStatus,
     }))
@@ -118,9 +133,9 @@ bids.get('/', requirePerm('read'), async (req, res, next) => {
   }
 })
 
-// ---------------------------------------------------------------------------
-// Get one bid with full details
-// ---------------------------------------------------------------------------
+/* ---------------------------------------------------------------------------
+   GET /bids/:id
+--------------------------------------------------------------------------- */
 bids.get('/:id', requirePerm('read'), async (req, res, next) => {
   try {
     const id = Number(req.params.id)
@@ -141,10 +156,7 @@ bids.get('/:id', requirePerm('read'), async (req, res, next) => {
     if (!b) return res.status(404).json({ error: 'Not found' })
 
     if (req.user?.role === 'VIEWER') {
-      const redacted = {
-        ...b,
-        scopes: undefined,
-      }
+      const redacted = { ...b, scopes: undefined }
       return res.json(redacted)
     }
 
@@ -154,24 +166,26 @@ bids.get('/:id', requirePerm('read'), async (req, res, next) => {
   }
 })
 
-// ---------------------------------------------------------------------------
-// Create a bid
-// ---------------------------------------------------------------------------
+/* ---------------------------------------------------------------------------
+   POST /bids  (ADMIN, MANAGER, ESTIMATOR)
+--------------------------------------------------------------------------- */
 bids.post('/', requireRole('ADMIN','MANAGER','ESTIMATOR'), async (req, res, next) => {
   try {
+    const scopes = sanitizeScopes(req.body.scopes)
+
     const bid = await prisma.bid.create({
       data: {
-        projectName: req.body.projectName,
+        projectName: String(req.body.projectName ?? '').trim(),
         clientCompanyId: req.body.clientCompanyId,
         contactId: req.body.contactId ?? null,
-        proposalDate: req.body.proposalDate ? new Date(req.body.proposalDate) : null,
-        dueDate: req.body.dueDate ? new Date(req.body.dueDate) : null,
-        followUpOn: req.body.followUpOn ? new Date(req.body.followUpOn) : null, // NEW
+        proposalDate: parseDateOrNull(req.body.proposalDate),
+        dueDate: parseDateOrNull(req.body.dueDate),
+        followUpOn: parseDateOrNull(req.body.followUpOn),
         jobLocation: req.body.jobLocation ?? null,
         leadSource: req.body.leadSource ?? null,
-        bidStatus: req.body.bidStatus, // allow 'Hot' | 'Cold'
+        bidStatus: req.body.bidStatus,
         scopes: {
-          create: (req.body.scopes || []).map((s: any) => ({
+          create: scopes.map(s => ({
             name: s.name,
             cost: s.cost,
             status: s.status,
@@ -180,40 +194,41 @@ bids.post('/', requireRole('ADMIN','MANAGER','ESTIMATOR'), async (req, res, next
       },
       include: { scopes: true },
     })
-    res.json(bid)
+
+    res.status(201).json(bid)
   } catch (e) {
     next(e)
   }
 })
 
-// ---------------------------------------------------------------------------
-// Update a bid (replaces scopes for simplicity)
-// ---------------------------------------------------------------------------
-bids.put(
-  '/:id',
-  canAccessBid,
-  requireRole('ADMIN','MANAGER','ESTIMATOR'),
-  async (req, res, next) => {
-    try {
-      const id = Number(req.params.id);
-      const data = req.body as BidInput;
+/* ---------------------------------------------------------------------------
+   PUT /bids/:id  — replace scopes atomically
+   (ADMIN, MANAGER, ESTIMATOR)
+--------------------------------------------------------------------------- */
+bids.put('/:id', canAccessBid, requireRole('ADMIN','MANAGER','ESTIMATOR'), async (req, res, next) => {
+  try {
+    const id = Number(req.params.id)
+    if (!Number.isFinite(id)) return res.status(400).json({ error: 'Invalid id' })
 
-      await prisma.scope.deleteMany({ where: { bidId: id } });
+    const data = req.body as BidInput
+    const scopes = sanitizeScopes(data.scopes)
 
-      const updated = await prisma.bid.update({
+    const [, updated] = await prisma.$transaction([
+      prisma.scope.deleteMany({ where: { bidId: id } }),
+      prisma.bid.update({
         where: { id },
         data: {
-          projectName: data.projectName,
+          projectName: String(data.projectName ?? '').trim(),
           clientCompanyId: data.clientCompanyId,
           contactId: data.contactId || null,
-          proposalDate: data.proposalDate ? new Date(data.proposalDate) : null,
-          dueDate: data.dueDate ? new Date(data.dueDate) : null,
-          followUpOn: data.followUpOn ? new Date(data.followUpOn) : null, // NEW
+          proposalDate: parseDateOrNull(data.proposalDate),
+          dueDate: parseDateOrNull(data.dueDate),
+          followUpOn: parseDateOrNull(data.followUpOn),
           jobLocation: data.jobLocation || null,
           leadSource: data.leadSource || null,
           bidStatus: data.bidStatus,
           scopes: {
-            create: data.scopes.map(s => ({
+            create: scopes.map(s => ({
               name: s.name,
               cost: s.cost,
               status: s.status,
@@ -221,11 +236,42 @@ bids.put(
           },
         },
         include: { scopes: true },
-      });
+      }),
+    ])
 
-      res.json(updated);
-    } catch (e) {
-      next(e)
-    }
+    res.json(updated)
+  } catch (e) {
+    next(e)
   }
-);
+})
+
+/* ---------------------------------------------------------------------------
+   DELETE /bids/:id  (ADMIN, ESTIMATOR)
+--------------------------------------------------------------------------- */
+bids.delete('/:id', requireRole('ADMIN','ESTIMATOR'), async (req, res, next) => {
+  try {
+    const id = Number.parseInt(String(req.params.id), 10)
+    if (!Number.isFinite(id)) return res.status(400).json({ error: 'Invalid id' })
+
+    // Clean children first, then delete the bid using deleteMany (won’t throw)
+    const result = await prisma.$transaction(async (tx) => {
+      await tx.scope.deleteMany({ where: { bidId: id } })
+      await tx.note.deleteMany({ where: { bidId: id } })
+      await tx.attachment.deleteMany({ where: { bidId: id } })
+      await tx.bidTag.deleteMany({ where: { bidId: id } })
+      const del = await tx.bid.deleteMany({ where: { id } })  // <- safe
+      return del.count
+    })
+
+    if (result === 0) {
+      return res.status(404).json({ error: 'Not found' })
+    }
+
+    res.status(204).end()
+  } catch (e) {
+    next(e)
+  }
+})
+
+
+export default bids

@@ -1,6 +1,6 @@
 import React from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
-import { getJSON, putJSON } from '../../lib/api'
+import { getJSON, putJSON, postJSON } from '../../lib/api'
 
 type Company = { id: number; name: string }
 type Contact = {
@@ -25,14 +25,15 @@ type Bid = {
   scopes: Scope[]
 }
 
+type ScopeCatalogRow = { id: number; name: string }
+
 /* ----------------------- helpers ----------------------- */
 const currency = (n: number) =>
   n.toLocaleString(undefined, { style: 'currency', currency: 'USD' })
 
-const dateToInput = (d?: string | null) =>
-  d ? new Date(d).toISOString().slice(0, 10) : ''
+const dateToInput = (d?: string | null) => (d ? d.slice(0, 10) : '')
 
-const inputToISO = (v: string) => (v ? new Date(v + 'T00:00:00').toISOString() : null)
+const inputToISO = (v: string) => (v ? `${v}T00:00:00Z` : null)
 
 function statusBadge(s: 'Pending' | 'Won' | 'Lost') {
   const base = 'inline-flex items-center rounded-full px-3 py-1 text-sm font-semibold'
@@ -53,31 +54,7 @@ function pillBadge(text: string, tone: 'blue' | 'slate' = 'slate') {
   )
 }
 
-/* ---------------- scope catalog + combobox (unchanged) --------------- */
-const SCOPE_LS_KEY = 'scopeCatalog.v1'
-const DEFAULT_SCOPES = [
-  'Architectural Aluminum','Canopies','Awnings','Pergola','Trellis','Arbor','Shutters','Cabana',
-  'String Light Poles','Pool LSE','Balcony Rail','Screen','Perimeter Fence','Retaining Wall Rail',
-  'ADA Rail','Pool Fence','Dog Park Fence','Wood Fence','Welded Wire Fence','Cable Rail','Pedestrian Gates',
-  'Breezeway Gates','Entry Gates','Compactor Gates','Compactor Rail','Pool Gates','Dog Park Gates',
-  'Glass Fence','Glass Gates','Chain Link Fence','PVC Fence',
-] as const
-
-function loadScopeCatalog(): string[] {
-  try {
-    const raw = localStorage.getItem(SCOPE_LS_KEY)
-    const saved: string[] = raw ? JSON.parse(raw) : []
-    const merged = Array.from(new Set([...DEFAULT_SCOPES, ...saved]))
-    return merged.sort((a, b) => a.localeCompare(b))
-  } catch {
-    return [...DEFAULT_SCOPES].sort((a, b) => a.localeCompare(b))
-  }
-}
-function saveScopeCatalog(catalog: string[]) {
-  const extras = catalog.filter(s => !DEFAULT_SCOPES.includes(s as any))
-  localStorage.setItem(SCOPE_LS_KEY, JSON.stringify(extras))
-}
-
+/* ---------------- scope combobox (unchanged UI) --------------- */
 function ScopeNameCombo(props: {
   value: string
   onChange: (val: string) => void
@@ -202,11 +179,11 @@ export default function BidEdit() {
     bidStatus: BidStatus
   } | null>(null)
 
-  // scopes + catalog
-  const [scopeCatalog, setScopeCatalog] = React.useState<string[]>(() => loadScopeCatalog())
+  // ⬇️ Catalog from API, not localStorage
+  const [scopeCatalog, setScopeCatalog] = React.useState<string[]>([])
   const [editScopes, setEditScopes] = React.useState<Scope[]>([])
 
-  // picklists (optional; will silently fallback if endpoints differ)
+  // picklists
   const [companies, setCompanies] = React.useState<Company[]>([])
   const [contacts, setContacts] = React.useState<Contact[]>([])
 
@@ -242,15 +219,24 @@ export default function BidEdit() {
     getJSON<Contact[]>(`/contacts?companyId=${edit.clientCompanyId}`).then(setContacts).catch(() => {})
   }, [edit?.clientCompanyId])
 
-  function addToCatalogIfMissing(name: string) {
+  // ⬇️ Load scope catalog from server
+  React.useEffect(() => {
+    getJSON<ScopeCatalogRow[]>('/scopes')
+      .then(rows => setScopeCatalog(rows.map(r => r.name).sort((a,b)=>a.localeCompare(b))))
+      .catch(() => setScopeCatalog([]))
+  }, [])
+
+  // ⬇️ Add to catalog on server if missing
+  async function addToCatalogIfMissing(name: string) {
     const val = (name || '').trim()
     if (!val) return
     if (scopeCatalog.some(s => s.toLowerCase() === val.toLowerCase())) return
-    setScopeCatalog(prev => {
-      const next = [...prev, val].sort((a, b) => a.localeCompare(b))
-      saveScopeCatalog(next)
-      return next
-    })
+    try {
+      await postJSON('/scopes', { name: val })
+      setScopeCatalog(prev => [...prev, val].sort((a,b)=>a.localeCompare(b)))
+    } catch {
+      // optional toast
+    }
   }
 
   function setScope(i: number, key: keyof Scope, val: any) {
